@@ -17,6 +17,14 @@ class LLMProvider(ABC):
 class MockLLMProvider(LLMProvider):
     def generate(self, prompt: str) -> str:
         lower = prompt.lower()
+        if "会议问答助手" in prompt:
+            question = prompt.split("【用户问题】")[-1].strip()
+            return json.dumps(
+                {
+                    "answer": f"这是基于当前会议资料的模拟回答：你问的是“{question}”。请配置真实 LLM API 以获得更完整的会议内问答。"
+                },
+                ensure_ascii=False,
+            )
         if "risk" in lower or "风险" in prompt:
             return json.dumps(
                 {

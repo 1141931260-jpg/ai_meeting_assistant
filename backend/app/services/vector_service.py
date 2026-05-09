@@ -17,6 +17,9 @@ class VectorDocument:
     metadata: dict[str, Any]
 
 
+MAX_VECTOR_TEXT_CHARS = 500
+
+
 class VectorService:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -36,14 +39,21 @@ class VectorService:
             path=str(self.settings.chroma_path),
             settings=ChromaSettings(anonymized_telemetry=False),
         )
-        self._collection = client.get_or_create_collection(name="meeting_documents")
+        self._collection = client.get_or_create_collection(name=self._collection_name())
         return self._collection
+
+    def _collection_name(self) -> str:
+        suffix = "".join(
+            character.lower() if character.isalnum() else "_" for character in self.settings.embedding_model
+        ).strip("_")
+        suffix = "_".join(part for part in suffix.split("_") if part)
+        return f"meeting_documents_{suffix or 'default'}"[:63].rstrip("_")
 
     def build_meeting_index(self, db: Session, meeting_id: str) -> None:
         docs = self._collect_documents(db, meeting_id)
         if not docs:
             return
-        embeddings = self.embedding_provider.embed_texts([doc.content for doc in docs])
+        embeddings = [self.embedding_provider.embed_texts([doc.content])[0] for doc in docs]
         collection = self._get_collection()
         ids = [doc.id for doc in docs]
         collection.upsert(
@@ -92,63 +102,85 @@ class VectorService:
             return []
         docs: list[VectorDocument] = []
         for segment in meeting.transcript_segments:
-            docs.append(
-                VectorDocument(
-                    id=f"segment-{segment.id}",
-                    content=segment.content,
-                    metadata={
-                        "meeting_id": meeting_id,
-                        "content_type": "segment",
-                        "speaker": segment.speaker,
-                        "evidence": segment.content[:160],
-                    },
-                )
+            self._append_documents(
+                docs,
+                f"segment-{segment.id}",
+                segment.content,
+                {
+                    "meeting_id": meeting_id,
+                    "content_type": "segment",
+                    "speaker": segment.speaker,
+                    "evidence": segment.content[:160],
+                },
             )
         if meeting.summary:
-            docs.append(
-                VectorDocument(
-                    id=f"summary-{meeting.summary.id}",
-                    content=f"{meeting.summary.overview}\n{meeting.summary.conclusion}",
-                    metadata={"meeting_id": meeting_id, "content_type": "summary"},
-                )
+            self._append_documents(
+                docs,
+                f"summary-{meeting.summary.id}",
+                f"{meeting.summary.overview}\n{meeting.summary.conclusion}",
+                {"meeting_id": meeting_id, "content_type": "summary"},
             )
         for decision in meeting.decisions:
-            docs.append(
-                VectorDocument(
-                    id=f"decision-{decision.id}",
-                    content=decision.content,
-                    metadata={
-                        "meeting_id": meeting_id,
-                        "content_type": "decision",
-                        "speaker": decision.speaker,
-                        "evidence": decision.evidence,
-                    },
-                )
+            self._append_documents(
+                docs,
+                f"decision-{decision.id}",
+                decision.content,
+                {
+                    "meeting_id": meeting_id,
+                    "content_type": "decision",
+                    "speaker": decision.speaker,
+                    "evidence": decision.evidence,
+                },
             )
         for risk in meeting.risks:
-            docs.append(
-                VectorDocument(
-                    id=f"risk-{risk.id}",
-                    content=f"{risk.risk_type}: {risk.description}",
-                    metadata={
-                        "meeting_id": meeting_id,
-                        "content_type": "risk",
-                        "speaker": risk.speaker,
-                        "evidence": risk.evidence,
-                    },
-                )
+            self._append_documents(
+                docs,
+                f"risk-{risk.id}",
+                f"{risk.risk_type}: {risk.description}",
+                {
+                    "meeting_id": meeting_id,
+                    "content_type": "risk",
+                    "speaker": risk.speaker,
+                    "evidence": risk.evidence,
+                },
             )
         for action in meeting.action_items:
-            docs.append(
-                VectorDocument(
-                    id=f"action-{action.id}",
-                    content=f"{action.title}\n{action.description or ''}",
-                    metadata={
-                        "meeting_id": meeting_id,
-                        "content_type": "action_item",
-                        "speaker": action.source_speaker,
-                        "evidence": action.evidence,
-                    },
-                )
+            self._append_documents(
+                docs,
+                f"action-{action.id}",
+                f"{action.title}\n{action.description or ''}",
+                {
+                    "meeting_id": meeting_id,
+                    "content_type": "action_item",
+                    "speaker": action.source_speaker,
+                    "evidence": action.evidence,
+                },
             )
         return docs
+
+    def _append_documents(self, docs: list[VectorDocument], base_id: str, content: str, metadata: dict[str, Any]) -> None:
+        chunks = self._split_text(content)
+        for index, chunk in enumerate(chunks):
+            chunk_id = base_id if len(chunks) == 1 else f"{base_id}-{index + 1}"
+            docs.append(
+                VectorDocument(
+                    id=chunk_id,
+                    content=chunk,
+                    metadata=self._clean_metadata(
+                        {
+                            **metadata,
+                            "chunk_index": index,
+                            "chunk_count": len(chunks),
+                        }
+                    ),
+                )
+            )
+
+    def _split_text(self, text: str) -> list[str]:
+        text = text.strip()
+        if not text:
+            return []
+        return [text[index : index + MAX_VECTOR_TEXT_CHARS] for index in range(0, len(text), MAX_VECTOR_TEXT_CHARS)]
+
+    def _clean_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in metadata.items() if value is not None}

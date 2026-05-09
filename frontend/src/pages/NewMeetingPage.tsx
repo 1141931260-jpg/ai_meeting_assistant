@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Upload } from "lucide-react";
 
@@ -11,7 +11,35 @@ export default function NewMeetingPage() {
   const [participantText, setParticipantText] = useState("");
   const [enableDiarization, setEnableDiarization] = useState(true);
   const [file, setFile] = useState<File | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function selectFile(nextFile: File | null) {
+    setFile(nextFile);
+  }
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    selectFile(event.target.files?.[0] ?? null);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragging(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setIsDragging(false);
+    }
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDragging(false);
+    selectFile(event.dataTransfer.files?.[0] ?? null);
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -33,7 +61,7 @@ export default function NewMeetingPage() {
     );
     form.append("file", file);
     const meeting = await api.createMeeting(form);
-    navigate(`/meetings/${meeting.id}`);
+    navigate(`/meetings/${meeting.id}?processing=1`);
   }
 
   return (
@@ -48,11 +76,11 @@ export default function NewMeetingPage() {
       <form className="form-panel" onSubmit={submit}>
         <label>
           会议标题
-          <input value={title} onChange={(event) => setTitle(event.target.value)} required placeholder="例如：产品登录模块复盘" />
+          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可选，留空后由 AI 自动生成" />
         </label>
         <label>
           会议描述
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="可选" />
+          <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="可选，留空后由 AI 自动生成" />
         </label>
         <label>
           参会人名单
@@ -66,12 +94,26 @@ export default function NewMeetingPage() {
           <input type="checkbox" checked={enableDiarization} onChange={(event) => setEnableDiarization(event.target.checked)} />
           启用说话人分离
         </label>
-        <label className="file-drop">
+        <div
+          className={`file-drop${isDragging ? " dragging" : ""}`}
+          role="button"
+          tabIndex={0}
+          onClick={() => fileInputRef.current?.click()}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              fileInputRef.current?.click();
+            }
+          }}
+        >
           <Upload size={24} />
-          <span>{file ? file.name : "选择 mp3、wav、m4a 或 txt 文件"}</span>
-          <input type="file" accept=".mp3,.wav,.m4a,.txt" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
-        </label>
-        <button className="gold-button wide" disabled={submitting || !file || !title}>
+          <span>{file ? file.name : "点击选择，或拖拽 mp3、wav、m4a、txt 文件到这里"}</span>
+          <input ref={fileInputRef} type="file" accept=".mp3,.wav,.m4a,.txt" onChange={handleFileChange} />
+        </div>
+        <button className="gold-button wide" disabled={submitting || !file}>
           {submitting ? "上传中..." : "上传并处理"}
         </button>
       </form>

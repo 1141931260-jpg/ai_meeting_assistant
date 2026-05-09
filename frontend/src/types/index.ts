@@ -105,3 +105,13 @@ export type SearchResult = {
   score: number;
   evidence?: string | null;
 };
+
+export type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type MeetingChatResponse = {
+  meeting_id: string;
+  answer: string;
+};

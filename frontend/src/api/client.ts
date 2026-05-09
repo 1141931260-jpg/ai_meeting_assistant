@@ -1,7 +1,9 @@
 import type {
   ActionItem,
+  ChatMessage,
   Decision,
   Meeting,
+  MeetingChatResponse,
   MeetingSummary,
   Participant,
   Risk,
@@ -44,6 +46,11 @@ export const api = {
   getDecisions: (id: string) => request<Decision[]>(`/api/meetings/${id}/decisions`),
   getRisks: (id: string) => request<Risk[]>(`/api/meetings/${id}/risks`),
   getActionItems: (id: string) => request<ActionItem[]>(`/api/meetings/${id}/action-items`),
+  chatWithMeeting: (id: string, question: string, history: ChatMessage[]) =>
+    request<MeetingChatResponse>(`/api/meetings/${id}/chat`, {
+      method: "POST",
+      body: JSON.stringify({ question, history })
+    }),
   updateActionItem: (id: string, payload: Partial<ActionItem>) =>
     request<ActionItem>(`/api/action-items/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   search: (query: string, top_k = 5) =>

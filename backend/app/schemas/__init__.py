@@ -76,7 +76,7 @@ class TranscriptSegmentRead(ORMModel):
     end_time: float
     speaker: str
     participant_id: str | None = None
-    display_speaker: str
+    display_speaker: str = ""
     content: str
     created_at: datetime
 
@@ -166,3 +166,18 @@ class SearchResult(BaseModel):
     score: float
     evidence: str | None = None
     metadata: dict[str, Any] = {}
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1)
+
+
+class MeetingChatRequest(BaseModel):
+    question: str = Field(min_length=1)
+    history: list[ChatMessage] = Field(default_factory=list)
+
+
+class MeetingChatResponse(BaseModel):
+    meeting_id: str
+    answer: str

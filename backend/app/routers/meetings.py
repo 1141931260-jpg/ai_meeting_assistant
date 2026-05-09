@@ -12,6 +12,8 @@ from app.config import get_settings
 from app.database import get_db
 from app.schemas import (
     DecisionRead,
+    MeetingChatRequest,
+    MeetingChatResponse,
     MeetingDetail,
     MeetingRead,
     MeetingSummaryRead,
@@ -19,6 +21,7 @@ from app.schemas import (
     RiskRead,
     TranscriptSegmentRead,
 )
+from app.services.llm_provider import get_llm_provider, parse_json_object
 from app.services.meeting_workflow import process_meeting, regenerate_meeting_outputs
 from app.services.speaker_mapping_service import display_name_for_speaker
 
@@ -28,7 +31,7 @@ router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 @router.post("", response_model=MeetingRead)
 async def create_meeting(
     background_tasks: BackgroundTasks,
-    title: str = Form(...),
+    title: str = Form(""),
     description: str | None = Form(None),
     participants: str = Form("[]"),
     enable_speaker_diarization: bool = Form(True),
@@ -42,8 +45,8 @@ async def create_meeting(
     settings = get_settings()
     source_type = "text" if suffix == ".txt" else "audio"
     meeting = models.Meeting(
-        title=title,
-        description=description,
+        title=title.strip(),
+        description=description.strip() if description else None,
         source_type=source_type,
         file_path="",
         original_filename=file.filename or "meeting",
@@ -80,6 +83,36 @@ def get_meeting(meeting_id: str, db: Session = Depends(get_db)):
     if not meeting:
         raise HTTPException(status_code=404, detail="会议不存在")
     return meeting
+
+
+@router.post("/{meeting_id}/chat", response_model=MeetingChatResponse)
+def chat_with_meeting(meeting_id: str, payload: MeetingChatRequest, db: Session = Depends(get_db)):
+    meeting = db.get(models.Meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="会议不存在")
+    context = _meeting_context(db, meeting_id, meeting)
+    if not context.strip():
+        raise HTTPException(status_code=400, detail="当前会议还没有可用于问答的内容")
+
+    recent_history = payload.history[-8:]
+    history_text = "\n".join(f"{item.role}: {item.content}" for item in recent_history)
+    prompt = f"""
+你是会议问答助手。只能根据【当前会议资料】回答问题，不要使用其他会议或外部知识。只输出合法 JSON：
+{{"answer": "回答内容"}}
+如果当前会议资料不足以回答，请直接说明“当前会议内容中没有找到相关信息”。
+
+【当前会议资料】
+{context}
+
+【本页对话历史】
+{history_text or "无"}
+
+【用户问题】
+{payload.question}
+"""
+    data = parse_json_object(get_llm_provider().generate(prompt), {"answer": "当前会议内容中没有找到相关信息。"})
+    answer = str(data.get("answer") or "当前会议内容中没有找到相关信息。")
+    return {"meeting_id": meeting_id, "answer": answer}
 
 
 @router.delete("/{meeting_id}")
@@ -175,6 +208,44 @@ def get_decisions(meeting_id: str, db: Session = Depends(get_db)):
 @router.get("/{meeting_id}/risks", response_model=list[RiskRead])
 def get_risks(meeting_id: str, db: Session = Depends(get_db)):
     return db.query(models.Risk).filter(models.Risk.meeting_id == meeting_id).all()
+
+
+def _meeting_context(db: Session, meeting_id: str, meeting: models.Meeting) -> str:
+    parts = [
+        f"会议标题：{meeting.title or '未命名会议'}",
+        f"会议描述：{meeting.description or meeting.original_filename}",
+    ]
+    segments = (
+        db.query(models.TranscriptSegment)
+        .filter(models.TranscriptSegment.meeting_id == meeting_id)
+        .order_by(models.TranscriptSegment.sequence)
+        .all()
+    )
+    if segments:
+        lines = []
+        for segment in segments:
+            speaker, _participant_id = display_name_for_speaker(db, meeting_id, segment.speaker)
+            lines.append(f"[{segment.start_time:.0f}-{segment.end_time:.0f}] {speaker}: {segment.content}")
+        parts.append("完整转写：\n" + "\n".join(lines))
+
+    summary = db.query(models.MeetingSummary).filter(models.MeetingSummary.meeting_id == meeting_id).first()
+    if summary:
+        key_points = "；".join(summary.key_points or [])
+        parts.append(f"会议摘要：{summary.overview}\n关键点：{key_points}\n结论：{summary.conclusion}")
+
+    decisions = db.query(models.Decision).filter(models.Decision.meeting_id == meeting_id).all()
+    if decisions:
+        parts.append("决策：\n" + "\n".join(f"- {item.content} 依据：{item.evidence or '无'}" for item in decisions))
+
+    risks = db.query(models.Risk).filter(models.Risk.meeting_id == meeting_id).all()
+    if risks:
+        parts.append("风险：\n" + "\n".join(f"- {item.level} {item.risk_type}：{item.description}" for item in risks))
+
+    actions = db.query(models.ActionItem).filter(models.ActionItem.meeting_id == meeting_id).all()
+    if actions:
+        parts.append("行动项：\n" + "\n".join(f"- {item.title}，负责人：{item.owner or '未指定'}，状态：{item.status}" for item in actions))
+
+    return "\n\n".join(parts)
 
 
 def _parse_participants(raw: str) -> list[dict]:
