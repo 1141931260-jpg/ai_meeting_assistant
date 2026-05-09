@@ -5,7 +5,11 @@ backend/app/**/__pycache__/
 backend/uploads/*
 backend/chroma_db/*
 backend/meeting_assistant.db
+meeting_assistant.db
 frontend/node_modules/
 frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 .env
 *.log
